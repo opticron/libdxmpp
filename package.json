@@ -7,7 +7,6 @@
 		"Kinsey Moore"
 	],
 	"dependencies": {
-		"libdsha": {"version": "~master"},
 		"kxml": {"version": "~master"}
 	}
 }
