@@ -4,14 +4,13 @@
  *	Until I get this working properly, everything will be hardcoded to jabber.
 */
 module libdxmpp.xmppclient;
-import libdsha.sha1;
-import std.thread : Thread;
+import std.digest.sha:sha1Of,toHexString;
+import core.thread:Thread;
 debug(libxmpd)import std.stdio : writefln;
 import std.string;
 import std.socket;
 import object;
-// these two dependencies need to be grabbed by whatever is using this module
-import futures.future;
+import std.parallelism:TaskPool,task,taskPool;
 import kxml.xml;
 
 // we need this for buddy list support
@@ -224,7 +223,7 @@ class XMPPClient {
 			return;
 		}
 		// since we have the return structure and it isn't junk, we want to tweak it and lob it back
-		auto digest = sha1HexString(sessionid~password);
+		auto digest = toHexString(sha1Of(sessionid~password));
 		// tweak query node
 		if (xml.getChildren().length && (tmp = xml.getChildren()[0]).getName().icmp("query") == 0) {
 			foreach (child;tmp.getChildren()) {
@@ -233,7 +232,7 @@ class XMPPClient {
 				if (name.icmp("resource") == 0) {
 					child.addCData(resource);
 				} else if (name.icmp("digest") == 0) {
-					child.addCData(digest);
+					child.addCData(digest.idup);
 				} else if (name.icmp("username") == 0 && child.getCData() == "") {
 					child.addCData(username);
 				} else if (name.icmp("password") == 0) {
@@ -250,8 +249,8 @@ class XMPPClient {
 		}
 		// send the modified xml packet
 		xml = sendIQ(getNewID,"set",tmp);
-		digest = xml.getAttribute("type");
-		if (digest !is null && digest.icmp("error") == 0) {
+		auto type = xml.getAttribute("type");
+		if (type !is null && type.icmp("error") == 0) {
 			debug(libxmpd) writefln("BARF: Got an error from the server");
 			if (connerrcb !is null) connerrcb(this,xml.toString());
 			Disconnect();
@@ -307,7 +306,7 @@ class XMPPClient {
 			debug(libxmpd)writefln("Processing event...");
 			if (sset.isSet(connection)) {
 				char[2048] buf;
-				int read;
+				long read;
 				synchronized (connection) read = connection.receive(buf);
 				if (read != Socket.ERROR && read > 0) {
 					buffer ~= buf[0 .. read];
@@ -340,7 +339,6 @@ class XMPPClient {
 				return 1;
 			}
 		}
-		return 0;
 	}
 	
 	private int handleXML() {
@@ -386,13 +384,13 @@ class XMPPClient {
 				// this is where we spawn threads
 				if (child.getName().icmp("iq") == 0){
 					debug(libxmpd)writefln("Got an IQ tag!");
-					future(&handleIQ,child);
+					taskPool.put(task(&handleIQ, child));
 				} else if (child.getName().icmp("message") == 0){
 					debug(libxmpd)writefln("Got a message!");
-					future(&handleMessage,child);
+					taskPool.put(task(&handleMessage, child));
 				} else if (child.getName().icmp("presence") == 0){
 					debug(libxmpd)writefln("Got presence!");
-					future(&handlePresence,child);
+					taskPool.put(task(&handlePresence, child));
 				} else {
 					debug(libxmpd)writefln("Unknown tag: "~child.toString());
 					tmp ~= child.toString();
