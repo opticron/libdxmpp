@@ -7,9 +7,8 @@ module libdxmpp.xmppclient;
 import std.digest.sha:sha1Of,toHexString;
 import core.thread:Thread;
 debug(libxmpd)import std.stdio : writefln;
-import std.string;
 import std.socket;
-import object;
+import std.conv:to;
 import std.parallelism:TaskPool,task,taskPool;
 import kxml.xml;
 
@@ -25,7 +24,7 @@ struct rosterItem {
 	string subscription;
 }
 
-class XMPPClient {
+class XMPPClient : Thread {
 	private {
 		string server,username,password,domain,resource;
 		ushort port;
@@ -47,12 +46,12 @@ class XMPPClient {
 		string[2][string]presinfo;
 
 		// variables to manage the connection
-		Thread runthread;
 		string buffer;
 		Socket connection;
 		bool isStreaming;
 		bool running;
 		bool authenticated;
+		bool forceStop;
 		XmlNode[string]responseList;
 	}
 	public void setAddress(string address,ushort connectport = 5222,string serverdomain = "") {
@@ -69,8 +68,10 @@ class XMPPClient {
 		isStreaming = false;
 		running = false;
 		authenticated = false;
+		forceStop = false;
 		resplist = new Object();
 		cbsetlock = new Object();
+		super(&runProtocol);
 	}
 	// this is going to be based on function pointers and will spawn a thread internally
 	void setConnErrCB(void function(XMPPClient,string)errcb) {
@@ -152,42 +153,40 @@ class XMPPClient {
 
 	// throws an exception on failure
 	void Connect() {
-		if (runthread is null) {
-			runthread = new Thread(&runProtocol);
-			runthread.start();
-			// wait for the thread to kick off before going anywhere
-			// this needs to be fail-safed somehow, the thread could fail before reaching the "running" stage
-			// and this would sit here forever
-			while (!running){Socket.select(null,null,null,1000);}
-			// since the thread is kicked off, let's do auth
-			doAuth();
+		if (isRunning()) {
+			return;
 		}
+
+		start();
+		while (!running){Socket.select(null,null,null,1000);}
+		// since the thread is kicked off, let's do auth
+		doAuth();
 	}
 
 	// let the user close the connection
 	void Disconnect() {
-		if (runthread !is null) {
-			// barf some raw junk at the server
-			sendRaw("</stream:stream>");
-			synchronized (connection) connection.close();
-			// i really hope this is enough to kill the thread, but somehow i know it won't be
-			// so i'm hoping the connection loss will take care of that for me
-			runthread = null;
+		if (!isRunning()) {
+			return;
 		}
+		// barf some raw junk at the server
+		sendRaw("</stream:stream>");
+		forceStop = true;
+		synchronized (connection) connection.close();
+		join();
 	}
 
 	// generate all IDs here
 	string getNewID() {
 		// make sure we start with 0....
-		static packetcount = -1;
+		static long packetcount = -1;
 		packetcount++;
-		return "libxmpd"~std.string.toString(packetcount);
+		return "libxmpd"~to!string(packetcount);
 	}
 
 	// allow the user to sit and wait on this
 	void wait() {
-		if (runthread !is null) {
-			runthread.wait();
+		if (isRunning()) {
+			join();
 		}
 	}
 
@@ -218,7 +217,6 @@ class XMPPClient {
 			debug(libxmpd) writefln("BARF: Got an error from the server");
 			if (connerrcb !is null) connerrcb(this,xml.toString());
 			Disconnect();
-			runthread = null;
 			// something broke....
 			return;
 		}
@@ -243,7 +241,6 @@ class XMPPClient {
 			debug(libxmpd) writefln("BARF: Got an error from the server");
 			if (connerrcb !is null) connerrcb(this,xml.toString());
 			Disconnect();
-			runthread = null;
 			// something broke and we need to do something better to handle the situation
 			return;
 		}
@@ -254,7 +251,6 @@ class XMPPClient {
 			debug(libxmpd) writefln("BARF: Got an error from the server");
 			if (connerrcb !is null) connerrcb(this,xml.toString());
 			Disconnect();
-			runthread = null;
 			// more broken shit
 			return;
 		}
@@ -292,7 +288,7 @@ class XMPPClient {
 
 	// libxmpp ALWAYS runs in a thread
 	// otherwise, we can't do auth properly
-	private int runProtocol() {
+	private void runProtocol() {
 		connection = new TcpSocket(new InternetAddress(server,port));
 		assert(connection.isAlive);
 		connection.blocking = false;
@@ -300,7 +296,7 @@ class XMPPClient {
 		running = true;
 		SocketSet sset = new SocketSet(1);
 	
-		while(true) {
+		while(!forceStop) {
 			sset.add(connection);
 			Socket.select(sset, null, null);
 			debug(libxmpd)writefln("Processing event...");
@@ -322,7 +318,7 @@ class XMPPClient {
 							debug(libxmpd)writefln("Reading more parts of the packet!");
 						}
 					}
-					if (!handleXML()) return 0;
+					if (!handleXML()) return;
 				} else if (read == Socket.ERROR || read == 0) {
 					debug(libxmpd)writefln("LibXMPD Connection error!");
 					// release socket resources
@@ -331,12 +327,12 @@ class XMPPClient {
 					buffer = "";
 					// call connection error delegate
 					connerrcb(this,"Connection error!");
-					return 1;
+					return;
 				}
 			} else {
 				// if we hit this, we have issues
 				connerrcb(this,"Connection error!");
-				return 1;
+				return;
 			}
 		}
 	}
