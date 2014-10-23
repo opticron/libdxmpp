@@ -1,0 +1,12 @@
+{
+	"name": "libdxmpp",
+	"description": "A XMPP client library for D",
+	"copyright": "Copyright 2014, Kinsey Moore",
+	"license": "BSL-1.0",
+	"authors": [
+		"Kinsey Moore"
+	],
+	"dependencies": {
+		"kxml": {"version": "~>1.0.0"}
+	}
+}
